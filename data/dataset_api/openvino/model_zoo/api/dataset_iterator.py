@@ -161,4 +161,7 @@ class DatasetIterator:
         annotation.set_segmentation_mask_source(segmentation_mask_source)
         annotation.set_additional_data_source(self.dataset_config.get('additional_data_source'))
         annotation.set_dataset_metadata(self.annotation_provider.metadata)
+    
+    def set_input_info(self, input_info):
+        self.input_provider.set_input_info(input_info)
 

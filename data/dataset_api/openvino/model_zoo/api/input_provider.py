@@ -1,13 +1,18 @@
+from venv import create
 from .config import ConfigError
 from .data_readers import BaseReader, REQUIRES_ANNOTATIONS
 from .preprocessor import PreprocessingExecutor
+from .input_feeder import create_input_feeder
 from .utils import extract_image_representations
 
 
 class InputProvider:
-    def __init__(self, data_reader, preprocessor):
+    def __init__(self, data_reader, preprocessor, input_info=None):
         self.data_reader = data_reader
         self.preprocessor = preprocessor
+        self.input_feeder = None
+        if input_info is not None:
+            self.input_feeder = create_input_feeder(input_info)
 
     @classmethod
     def from_config(cls, config, annotation_provider=None):
@@ -37,12 +42,18 @@ class InputProvider:
     def preprocess_batch(self, batch_input):
         if self.preprocessor:
             batch_input = self.preprocessor.process(batch_input)
-        return extract_image_representations(batch_input)
+        batch_input_data, batch_meta = extract_image_representations(batch_input)
+        if self.input_feeder:
+            batch_input_data = self.input_feeder(batch_input)
+        return batch_input_data, batch_meta
 
     def preprocess(self, input_data):
         if self.preprocessor:
             input_data = self.preprocessor.preprocess(input_data)
-        return extract_image_representations(input_data)
+        inputs, meta = extract_image_representations(input_data)
+        if self.input_feeder:
+            inputs = self.input_feeder.fill_inputs(input_data)
+        return inputs, meta
 
     def __call__(self, identifier):
         input_data = self.read(identifier)
@@ -50,6 +61,9 @@ class InputProvider:
 
     def set_transforms(self, transforms):
         self.preprocessor = PreprocessingExecutor(transforms)
+
+    def set_input_info(self, input_info):
+        self.input_feeder = create_input_feeder(input_info)
 
     def reset(self):
         self.data_reader.reset()

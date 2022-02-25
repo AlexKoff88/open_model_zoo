@@ -18,9 +18,9 @@ import re
 from collections import defaultdict
 import numpy as np
 
-from ..config import ConfigError
-from ..utils import extract_image_representations
-from ..data_readers import (
+from .config import ConfigError
+from .utils import extract_image_representations, parse_partial_shape
+from .data_readers import (
     MultiFramesInputIdentifier,
     KaldiFrameIdentifier,
     KaldiMatrixIdentifier,
@@ -83,16 +83,45 @@ PRECISION_TO_DTYPE = {
 INPUT_TYPES_WITHOUT_VALUE = ['IMAGE_INFO', 'ORIG_IMAGE_INFO', 'IGNORE_INPUT', 'LSTM_INPUT', 'SCALE_FACTOR']
 
 
+def create_input_feeder(input_info):
+    def prepare_layout_string(layout):
+            layout = str(layout)
+            if layout == '[...]':
+                return ''
+            return layout.replace('[', '').replace(']', '').replace(',', '')
+
+    network_inputs = {}
+    for tensor in input_info:
+        layout = prepare_layout_string(tensor.get_node().layout)
+        shape = parse_partial_shape(tensor.partial_shape)
+        if len(shape) == 4 and not layout:
+            if shape[1] in [1, 2, 3, 4, 6, 9]:
+                layout = 'NCHW'
+            else:
+                layout = 'NHWC'
+        
+        network_inputs[tensor.any_name] = {
+            'tensor': tensor, 
+            'shape': shape, 
+            'dtype': tensor.element_type.get_type_name(),
+            'layout': layout
+        }
+    return InputFeeder({}, network_inputs, None)
+
+
+
 class InputFeeder:
     def __init__(
-            self, inputs_config, network_inputs, shape_checker, prepare_input_data=None, default_layout='NCHW',
+            self, inputs_config, network_inputs, shape_checker=None, prepare_input_data=None, default_layout='NCHW',
             dummy=False, input_precisions_list=None, input_layouts=None
     ):
         def fit_to_input(data, input_layer_name, layout, precision, template=None):
             layout_used = False
-            if np.ndim(data) == 4:
-                layout_used = True
-                data = np.transpose(data, layout)
+            shape = self.network_inputs[input_layer_name]['shape']
+            if np.ndim(data) == len(layout):
+                if not np.shape(data) == shape:
+                    layout_used = True
+                    data = np.transpose(data, layout)
             else:
                 data = np.array(data)
             if template:
@@ -104,9 +133,12 @@ class InputFeeder:
                 return data.astype(precision) if precision else data, template
             return data.astype(precision) if precision else data
 
-        self.shape_checker = shape_checker
+        def check_shape(input_name):
+            return self.network_inputs[input_name]['shape']
+
+        self.network_inputs = network_inputs or {}
+        self.shape_checker = shape_checker or check_shape
         self.input_transform_func = prepare_input_data or fit_to_input
-        self.network_inputs = network_inputs or []
         self.default_layout = default_layout
         self.dummy = dummy
         self.ordered_inputs = False
@@ -317,6 +349,9 @@ class InputFeeder:
         for infer_inputs in inputs:
             infer_inputs.update(self.const_inputs)
         return inputs
+
+    def __call__(self, data_representation_batch, *args, **kwds):
+        return self.fill_inputs(data_representation_batch)
 
     def fill_inputs_with_template(self, data_representation_batch, template=None):
         if self.dummy:
